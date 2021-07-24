@@ -56,6 +56,24 @@ let
       cargoSha256 = "1chxf0rgdps21rm3p2c0yn9z0gvzx095n74ryiv89y0d1gka5jy6";
     };
 
+    # inject JS loaders into firefox
+    wrapFirefoxJS = { wrapFirefox, lib }: unwrapped: { jsLoaders ? [ ], ... }@config: with lib; let
+      firefoxLibName = config.firefoxLibName or unwrapped.firefoxLibName or "firefox";
+      autoconfig = "$out/lib/${firefoxLibName}/defaults/pref/autoconfig.js";
+      jsLoaderLine = loader: if isDerivation loader
+        then ''Cu.import("file://${loader}")''
+        else "${loader}";
+      js = concatMapStringsSep "\n" (loader: jsLoaderLine (loader.js or loader)) jsLoaders;
+      wrapperConfig = removeAttrs config [ "jsLoaders" ] // optionalAttrs (jsLoaders != [ ]) {
+        extraPrefs = config.extraPrefs or "" + js;
+      };
+      wrapped = wrapFirefox unwrapped wrapperConfig;
+    in wrapped.overrideAttrs (old: {
+      buildCommand = old.buildCommand + ''
+        echo 'pref("general.config.sandbox_enabled", false);' >> ${autoconfig}
+      '';
+    });
+
     looking-glass-kvmfr-develop = { looking-glass-kvmfr, looking-glass-client-develop, linux }:
       looking-glass-kvmfr.override {
         looking-glass-client = looking-glass-client-develop;

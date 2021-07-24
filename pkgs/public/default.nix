@@ -24,5 +24,6 @@
 // (import ./linux)
 // (import ./ryzen-smu)
 // (import ./matrix)
+// (import ./firefox)
 // (import ./pass)
 // (import ../git)
