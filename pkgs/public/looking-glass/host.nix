@@ -34,6 +34,11 @@ in stdenv.mkDerivation rec {
     libxcb libXfixes
   ];
 
+  patches = with namedPatches; [
+    nvfbc-pointerthread
+    nvfbc-framesize nvfbc-scale
+  ];
+
   makeFlags = [
     "VERBOSE=1"
   ];
@@ -47,6 +52,8 @@ in stdenv.mkDerivation rec {
     "-DUSE_NVFBC=ON"
     "-DNVFBC_SDK=${nvidia-capture-sdk.sdk}"
   ]);
+
+  hardeningDisable = [ "all" ];
 
   meta = looking-glass-client.meta or { } // {
     platforms = with platforms; linux ++ windows;
