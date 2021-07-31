@@ -1,6 +1,7 @@
 { lib, config, pkgs, ... }: with lib; let
   cfg = config.services.wireplumber;
   arc = import ../../canon.nix { inherit pkgs; };
+  toLuaExpr = lib.lua.toLuaExpr or arc.lib.lua.toLuaExpr;
   migrateAlsa = throw "TODO"; #  config.services.pipewire.mediaSession.alsa-monitor)
   pipewireModuleType = types.submodule ({ config, ... }: {
     options = {
@@ -30,6 +31,10 @@
           type = types.attrs;
           internal = true;
         };
+        lua = mkOption {
+          type = types.attrs;
+          internal = true;
+        };
       };
     };
     config.out = {
@@ -43,82 +48,53 @@
       component = {
         inherit (config) name;
         type = "pw_module";
-        # TODO: assert that args and flags are empty because they are not supported
+        # TODO: assert that args and flags are empty because they are not yet supported
+      };
+      lua = {
+        # TODO: assert flags are empty
+        "[1]" = config.name;
+        type = "pw_module";
+        args = config.arguments;
+      };
+    };
+  });
+  wireplumberModuleType = types.submodule ({ config, ... }: {
+    options = {
+      name = mkOption {
+        type = types.str;
+      };
+      arguments = mkOption {
+        type = pipewireModuleArgs;
+        default = { };
+      };
+      type = mkOption {
+        type = types.enum [ "module" "script/lua" "config/lua" ];
+        default = "module";
+      };
+      out = {
+        component = mkOption {
+          type = types.attrs;
+          internal = true;
+        };
+        lua = mkOption {
+          type = types.attrs;
+          internal = true;
+        };
+      };
+    };
+    config.out = {
+      component = {
+        inherit (config) name type;
+        # TODO: assert that args are empty because they are not yet supported
+      };
+      lua = {
+        "[1]" = config.name;
+        inherit type;
+        args = config.arguments;
       };
     };
   });
   pipewireModuleTypeSloppy = with types; coercedTo str (name: { inherit name; }) pipewireModuleType;
-  commandType = types.submodule ({ options, config, ... }: {
-    options = {
-      add-spa-lib = {
-        namePattern = mkOption {
-          type = types.str;
-        };
-        libraryName = mkOption {
-          type = types.str;
-        };
-      };
-      load-pipewire-module = {
-        moduleName = mkOption {
-          type = types.str;
-        };
-        arguments = mkOption {
-          type = pipewireModuleArgs;
-          default = { };
-        };
-      };
-      load-module = {
-        abi = mkOption {
-          type = types.enum [ "C" ];
-          default = "C";
-        };
-        moduleName = mkOption {
-          type = types.str;
-        };
-        parameters = mkOption {
-          type = types.attrsOf gvariantType;
-          default = { };
-        };
-        out.parametersBlock = mkOption {
-          type = types.str;
-          internal = true;
-        };
-      };
-
-      out = {
-        type = mkOption {
-          type = types.enum [ "add-spa-lib" "load-pipewire-module" "load-module" ];
-        };
-        directive = mkOption {
-          type = types.str;
-        };
-      };
-    };
-
-    config = {
-      type = mkMerge [
-        (mkIf options.add-spa-lib.libraryName.isDefined "add-spa-lib")
-        (mkIf options.load-pipewire-module.moduleName.isDefined "load-pipewire-module")
-        (mkIf options.load-module.moduleName.isDefined "load-module")
-      ];
-      out.directive = {
-        add-spa-lib = concatStringsSep " " [ config.add-spa-lib.namePattern config.add-spa-lib.libraryName ];
-        load-pipewire-module = concatStringsSep " " (
-          singleton config.load-pipewire-module.moduleName
-          ++ mapAttrsToList (_: arg: arg.out.directive) config.load-pipewire-module.arguments
-        );
-        load-module = concatStringsSep " " (
-          [ config.load-module.abi config.load-module.moduleName ]
-          ++ optional (config.load-module.parameters != { }) config.load-module.out.parametersBlock
-        );
-      }.${config.out.type};
-      load-module = {
-        out.parametersBlock = gvariant (
-          mapAttrs' (_: param: nameValuePair param.name param.value) config.load-module.parameters
-        );
-      };
-    };
-  });
   pipewireContextType = with types; oneOf [ bool int str (attrsOf pipewireContextType) (listOf pipewireContextType) ];
 in {
   options.services.wireplumber = {
@@ -131,6 +107,17 @@ in {
     logLevel = mkOption {
       type = types.int;
       default = 2;
+    };
+    lua = {
+      enable = mkEnableOption "lua scripting engine" // { default = true; };
+      componentsConfig = mkOption {
+        type = types.attrs;
+        internal = true;
+      };
+      componentsConfigFile = mkOption {
+        type = types.path;
+        internal = true;
+      };
     };
     access = {
       enable = mkEnableOption "default access module" // { default = true; };
@@ -224,26 +211,15 @@ in {
         };
       };
     };
-    modules = mkOption {
+    components = mkOption {
       type = types.listOf wireplumberModuleType;
-    };
-    startup = mkOption {
-      # TODO: is all of this outdated info?
-      type = types.listOf commandType;
-      default = [ ];
     };
     config = mkOption {
       type = with types; attrsOf (either (attrsOf pipewireContextType) (listOf pipewireContextType));
     };
-    extraConfig = mkOption {
-      type = types.lines;
-      default = "";
-    };
-    configScript = mkOption {
-      type = types.lines;
-    };
     configFile = mkOption {
       type = types.path;
+      internal = true;
     };
     moduleDir = mkOption {
       type = types.path;
@@ -252,8 +228,13 @@ in {
 
   config = {
     services.wireplumber = {
-      configScript = mkAfter cfg.extraConfig;
-      configFile = pkgs.writeText "wireplumber.conf" cfg.configScript;
+      configFile = pkgs.writeText "wireplumber.conf" (toJSON cfg.config);
+      lua = {
+        componentsConfig = listToAttrs (imap (i: comp: nameValuePair "${fixedWidthNumber 3 i}${comp.name}" comp.out.lua) cfg.components);
+        componentsConfigFile = pkgs.writeText "wireplumber.lua" ''
+          components = ${toLuaExpr cfg.lua.componentsConfig}
+        '';
+      };
       pipewire = {
         modules = mkMerge [
           (mkIf cfg.pipewire.rt.enable (mkBefore [
@@ -340,9 +321,6 @@ in {
           { name = "libwireplumber-module-default-profile"; type = "module"; }
           { name = "restore-stream.lua"; type = "script/lua"; }
         ];
-        prelude =
-          optional cfg.lua.enable { name = "libwireplumber-module-lua-scripting"; type = "module"; }
-          ++ singleton { name = "libwireplumber-module-metadata"; type = "module"; };
         alsa =
           optional cfg.alsa.reserve.enable { name = "libwireplumber-module-reserve-device"; type = "module"; }
           ++ { name = "monitor-alsa"; type = "script/lua"; args = {
@@ -353,8 +331,7 @@ in {
         bluez = throw "TODO";
       in mkMerge [
         (mkBefore (
-          prelude
-          ++ optionals cfg.access.enable access
+          optionals cfg.access.enable access
         ))
         (
           optionals cfg.alsa.enable alsa
@@ -379,61 +356,23 @@ in {
         ))
       ];
       config = {
-        "context.properties" = mapAttrs (_: mkOptionDefault) {
-          "log.level" = cfg.logLevel;
-          "wireplumber.script-engine" = "lua-scripting";
+        "context.properties" = {
+          "log.level" = mkOptionDefault cfg.logLevel;
+          "wireplumber.script-engine" = mkIf cfg.lua.enable (mkOptionDefault "lua-scripting");
         };
         "context.spa-libs" = mapAttrs (_: mkOptionDefault) cfg.pipewire.spaLibs;
         "context.modules" = map (mod: mod.out.context) cfg.pipewire.modules;
-        "wireplumber.components" = mkMerge [
-          (mkBefore [
-            { name = "libwireplumber-module-lua-scripting"; type = "module"; }
-            { name = "libwireplumber-module-metadata"; type = "module"; }
-            { name = "access/access-default.lua"; type = "script/lua"; args = {
-              rules = cfg.defaultAccessRules;
-            }; }
-          ])
-          (mkIf cfg.enableFlatpakPortal (mkBefore [
-            {name = "libwireplumber-module-portal-permissionstore"; type = "module"; }
-            {name = "libwireplumber-module-portal"; type = "module"; }
-          ]))
-          [
-            { name = "xxx"; type = "script/lua"; args = {
-            }; }
-            #{ name = "main.lua"; type = "config/lua"; }
-            #{ name = "policy.lua"; type = "config/lua"; }
-            #{ name = "bluetooth.lua"; type = "config/lua"; }
-          ]
+        "wireplumber.components" = let
+          prelude =
+            optional cfg.lua.enable { name = "libwireplumber-module-lua-scripting"; type = "module"; }
+            ++ singleton { name = "libwireplumber-module-metadata"; type = "module"; };
+        in mkMerge [
+          (mkBefore prelude)
+          # XXX: until wp spa json supports "args", module configuration must be done via lua syntax
+          # see https://gitlab.freedesktop.org/pipewire/wireplumber/-/issues/45
+          [ { name = "${cfg.lua.componentsConfig}"; type = "config/lua"; } ]
         ];
       };
-      /*startup = mkMerge [
-        (mkBefore [
-          { add-spa-lib = {
-            namePattern = "api.alsa.*";
-            libraryName = "alsa/libspa-alsa";
-          }; }
-        ])
-        [
-        #{ load-pipewire-module = {
-        #  moduleName = "module-monitor";
-        #  arguments = {
-        #    factory = "api.alsa.enum.udev";
-        #    flags = [ "use-adapter" ];
-        #  };
-        #}; }
-        { load-module = {
-          moduleName = "libwireplumber-module-monitor";
-          parameters = {
-            factory = "api.alsa.enum.udev";
-            flags = [ "use-adapter" ];
-          };
-        }; }
-        { load-pipewire-module = {
-          moduleName = "libpipewire-module-config-endpoint";
-          arguments = {
-          };
-        }; }
-      ] ];*/
     };
     environment.systemPackages = mkIf cfg.enable [ cfg.package ];
     systemd.user.services.wireplumber = mkIf cfg.enable {

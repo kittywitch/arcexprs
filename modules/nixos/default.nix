@@ -17,7 +17,7 @@
       modprobe
       pulseaudio
       pipewire
-      #wireplumber
+      wireplumber
       alsa
       yggdrasil
       display
