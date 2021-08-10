@@ -40,10 +40,10 @@ in with lib; {
           IOSchedulingClass = "idle";
           TimeoutStartSec = "5m";
         };
-        Install.WantedBy = mkMerge [
+        Install.WantedBy = mkIf (cfg.interval == null) (mkMerge [
           (mkDefault [ "graphical-session.target" ])
           (mkIf config.wayland.windowManager.sway.enable [ "sway-session.target" ])
-        ];
+        ]);
       };
       konawall-rotation = mkIf (cfg.interval != null) {
         Unit = {
@@ -52,7 +52,7 @@ in with lib; {
         };
         Service = {
           Type = "oneshot";
-          ExecStart = "${config.systemd.package or pkgs.systemd}/bin/systemctl --user restart konawall";
+          ExecStart = "${config.systemd.package or pkgs.systemd}/bin/systemctl --user --no-block restart konawall";
         };
       };
     };
@@ -62,11 +62,12 @@ in with lib; {
       };
       Timer = {
         OnUnitInactiveSec = cfg.interval;
-        OnStartupSec = cfg.interval;
+        OnStartupSec = 0;
       };
-      Install = {
-        inherit (service.Install) WantedBy;
-      };
+      Install.WantedBy = mkMerge [
+        (mkDefault [ "graphical-session.target" ])
+        (mkIf config.wayland.windowManager.sway.enable [ "sway-session.target" ])
+      ];
     };
   };
 }
